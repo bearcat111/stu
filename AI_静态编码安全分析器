@@ -1,1 +1,187 @@
+import tkinter as tk
+from tkinter import ttk, filedialog
+import json
+import requests
+from threading import Thread
+
+
+class CodeAnalyzerApp:
+    def __init__(self, master):
+        self.master = master
+        master.title("AI代码安全分析器 v1.0")
+
+        # 界面布局
+        self.model_endpoint = "http://localhost:11434/api/generate"
+        self.supported_langs = ["C/C++", "Java", "Python", "PHP", "Go", "JavaScript"]
+        self.create_widgets()
+
+    def create_widgets(self):
+        # 代码输入区
+        self.code_text = tk.Text(self.master, height=20, width=80)
+        self.code_text.grid(row=0, column=0, padx=10, pady=10)
+
+        # 控制面板
+        control_frame = ttk.Frame(self.master)
+        control_frame.grid(row=1, column=0, sticky="w")
+
+        # 语言选择
+        self.lang_var = tk.StringVar()
+        lang_label = ttk.Label(control_frame, text="代码语言:")
+        lang_label.grid(row=0, column=0, padx=5)
+        self.lang_menu = ttk.Combobox(control_frame,
+                                      textvariable=self.lang_var,
+                                      values=self.supported_langs)
+        self.lang_menu.grid(row=0, column=1)
+        self.lang_menu.current(0)
+
+        # 文件选择
+        ttk.Button(control_frame,
+                   text="选择文件",
+                   command=self.load_file).grid(row=0, column=2, padx=5)
+
+        # 分析按钮
+        ttk.Button(control_frame,
+                   text="开始分析",
+                   command=self.start_analysis).grid(row=0, column=3, padx=5)
+
+        # 结果显示
+        self.result_text = tk.Text(self.master, height=10, width=80)
+        self.result_text.grid(row=2, column=0, padx=10, pady=10)
+
+    def load_file(self):
+        filepath = filedialog.askopenfilename(
+            filetypes=[("All Files", "*.*")])
+        if filepath:
+            with open(filepath, 'r') as f:
+                self.code_text.delete(1.0, tk.END)
+                self.code_text.insert(tk.END, f.read())
+
+    def generate_prompt(self, code, lang):
+        return f"""请严格按以下JSON格式对{lang}代码进行安全审计：
+'''{lang.lower()}
+{code}
+        输出要求：
+        {{
+        "code_metadata": {{
+        "language": "{lang}",
+        "total_lines": [代码总行数]
+        }},
+        "vulnerabilities": [
+        {{
+        "type": "漏洞类型",
+        "severity": "高危/中危/低危",
+        "line_numbers": [行号数组],
+        "description": "风险描述",
+        "suggestion": "修复建议"
+        }}
+        ],
+        "summary": {{
+        "high_risk": [高危数量],
+        "medium_risk": [中危数量],
+        "low_risk": [低危数量]
+        }}
+        }}
+        """
+
+    def show_error(self, msg):
+        self.result_text.delete(1.0, tk.END)
+        self.result_text.insert(tk.END, f"错误: {msg}")
+
+    def analyze_code(self):
+        code = self.code_text.get(1.0, tk.END)
+
+        lang = self.lang_var.get()
+
+        # 修正请求参数的缩进和格式
+        try:
+            prompt = self.generate_prompt(code, lang)
+            response = requests.post(
+                self.model_endpoint,
+                json={
+                    "model": "deepseek-r1:8b",  # 统一缩进
+                    "options": {"num_ctx": 4096, "num_predict": 1024},  # 参数限制
+                    "prompt": prompt,
+                    "format": "json",
+                    "stream": False
+                }
+            )
+            result = json.loads(response.json()["response"])
+            self.master.after(0, self.display_result, result)
+
+        except Exception as e:
+            self.master.after(0, lambda: self.show_error(str(e)))
+
+    def display_result(self, result):
+        self.code_text.tag_remove("vul_line", 1.0, tk.END)
+        self.result_text.delete(1.0, tk.END)
+
+        # 1. 显示基础信息
+        metadata = result.get("code_metadata", {})
+        self.result_text.insert(tk.END,
+                                f"🔍 分析报告 | 语言: {metadata.get('language', '未知')} | "
+                                f"压缩后代码有效行数: {metadata.get('total_lines', 0)}\n", "header")
+
+        # 2. 漏洞分类展示
+        vul_table = ttk.Treeview(self.result_text, columns=('type', 'severity', 'lines', 'action'), show='headings')
+        vul_table.heading('type', text='漏洞类型')
+        vul_table.heading('severity', text='危险等级')
+        vul_table.heading('lines', text='影响行号')
+        vul_table.heading('action', text='操作')
+
+        # 3. 颜色标签定义
+        severity_color = {
+            "高危": "#ff4444",
+            "中危": "#ffa500",
+            "低危": "#4CAF50"
+        }
+
+        for vul in result.get("vulnerabilities", []):
+            line_nums = ", ".join(map(str, vul.get("line_numbers", [])))
+            vul_table.insert('', 'end',
+                             values=(
+                                 vul.get("type", "未知"),
+                                 vul.get("severity", "未知"),
+                                 line_nums,
+                                 "查看详情"
+                             ),
+                             tags=(vul["severity"],)
+                             )
+
+        # 4. 交互功能：点击行跳转到代码
+        def on_vul_select(event):
+            item = vul_table.selection()[0]
+            line_nums = vul_table.item(item, "values")[2].split(", ")
+            self.code_text.tag_remove("highlight", 1.0, tk.END)
+            for line in line_nums:
+                if line.isdigit():
+                    start = f"{line}.0"
+                    end = f"{int(line) + 1}.0"
+                    self.code_text.tag_add("highlight", start, end)
+            self.code_text.see(f"{line}.0")  # 自动滚动到对应行
+
+        vul_table.bind("<Double-1>", on_vul_select)
+
+        # 5. 样式配置
+        self.result_text.window_create(tk.END, window=vul_table)
+        for sev, color in severity_color.items():
+            vul_table.tag_configure(sev, background=color, foreground="white")
+
+        # 配置文本样式
+        self.result_text.tag_config("header", font=('微软雅黑', 11, 'bold'))
+        self.result_text.tag_config("summary", foreground="#2196F3")
+
+    def start_analysis(self):
+        """ 核心：启动分析线程 """
+        # 清空旧结果
+        self.result_text.delete(1.0, tk.END)
+        self.result_text.insert(tk.END, "分析中，请稍候...\n")
+
+        # 启动后台线程防止GUI卡死
+        Thread(target=self.analyze_code).start()
+
+# 修正主程序入口
+if __name__ == "__main__":  # 添加双下划线
+    root = tk.Tk()
+    app = CodeAnalyzerApp(root)
+    root.mainloop()
 
