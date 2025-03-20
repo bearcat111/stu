@@ -10,3 +10,4 @@ Including C/C++ 、Java 、Python 、PHP 、JavaScript
 
 实测bug一堆，但代码大致上能运行，设想了很多改进（正确显示代码行数、问题行高亮显示、优化显示界面、提供代码优化建议、显示漏洞CWE编号）都没能实现。
 
+Excel_proccessor_plus.py is a proccess that can desensitize sensitive data in Excel, mostly in Chinese.
